@@ -173,172 +173,241 @@ let availableModels = {
   allModels: [], // List of all available models
 };
 
-// Function to discover available models with enhanced vision model detection
+// Enhanced model discovery function with better vision model detection
 async function discoverAvailableModels() {
   try {
     logger.info("Discovering available Gemini models...");
 
-    // Try to list models (this might not work with all API versions)
+    // Expanded list of vision models to test based on official documentation
+    const visionModels = [
+      // Gemini 2.0 vision models (newest)
+      "gemini-2.0-vision",
+      "gemini-2.0-pro-vision",
+
+      // Gemini 1.5 vision models
+      "gemini-1.5-pro-vision",
+      "gemini-1.5-vision",
+      "gemini-1.5-flash-vision",
+
+      // Legacy Gemini vision models
+      "gemini-pro-vision",
+      "gemini-vision",
+
+      // Flash/Pro variations that might support vision
+      "gemini-2.0-flash", // Per docs, can handle multimodal inputs
+      "gemini-1.5-pro", // Per docs, can handle multimodal inputs
+      "gemini-1.5-flash", // Per docs, can handle multimodal inputs
+    ];
+
+    // Text-only models as fallback
+    const textModels = [
+      "gemini-2.0-pro",
+      "gemini-2.0-flash",
+      "gemini-1.5-pro",
+      "gemini-1.5-flash",
+      "gemini-pro",
+    ];
+
+    // Combined list with vision models first
+    const allPotentialModels = [...visionModels, ...textModels];
+
+    // Try to list models from API first
     try {
+      logger.info("Attempting to retrieve models directly from API...");
       const models = await genAI.listModels();
-      if (models && models.models) {
+      if (models && models.models && models.models.length > 0) {
         availableModels.allModels = models.models.map((m) => m.name);
-        logger.info("Available models from API:", availableModels.allModels);
+        logger.success(
+          `Successfully retrieved ${availableModels.allModels.length} models from API`
+        );
+
+        // Identify vision models from the list
+        identifyAndCategorizeModels(availableModels.allModels);
+        return true;
+      } else {
+        logger.warn(
+          "No models returned from API, falling back to predefined list"
+        );
       }
     } catch (listError) {
-      logger.warn("Could not list models from API:", listError.message);
-      logger.info("Will try predefined model names instead");
+      logger.warn(
+        "Could not list models directly from API:",
+        listError.message
+      );
+      logger.info("Falling back to testing predefined model names...");
     }
 
-    // If model listing failed or returned empty, try predefined models
-    if (availableModels.allModels.length === 0) {
-      // List of potential model names to try, prioritizing vision models
-      const potentialModels = [
-        // Gemini Vision models (prioritized)
-        "gemini-2.0-vision",
-        "gemini-1.5-vision",
-        "gemini-1.5-pro-vision",
-        "gemini-pro-vision",
-        "gemini-vision", // Generic name that might exist
+    // If we couldn't get the list from the API, test each model individually
+    logger.info("Testing vision models first...");
 
-        // Vision models from other generations
-        "gemini-2.0-pro-vision",
-        "gemini-ultra-vision",
+    for (const modelName of allPotentialModels) {
+      try {
+        // Create a simple test prompt
+        const model = genAI.getGenerativeModel({ model: modelName });
 
-        // Text models as fallback
-        "gemini-2.0-flash",
-        "gemini-2.0-pro",
-        "gemini-1.5-flash",
-        "gemini-1.5-pro",
-        "gemini-pro",
-      ];
+        // First test with text to see if the model exists
+        const result = await model.generateContent("Test");
+        const response = await result.response;
 
-      logger.info(
-        "Testing predefined model names (prioritizing vision models)..."
-      );
+        // If we get here, the model exists
+        logger.success(`✅ Model '${modelName}' is available`);
+        availableModels.allModels.push(modelName);
 
-      // Test each model with a simple prompt
-      for (const modelName of potentialModels) {
-        try {
-          const model = genAI.getGenerativeModel({ model: modelName });
-          const result = await model.generateContent("Test");
-          // If we get here without an error, the model exists
-          logger.success(`✅ Model '${modelName}' is available`);
-          availableModels.allModels.push(modelName);
+        // Now test if the model supports image input (only for models not already known to be vision models)
+        if (!modelName.includes("vision")) {
+          try {
+            logger.info(
+              `Testing if ${modelName} supports vision/multimodal input...`
+            );
 
-          // Categorize with enhanced logging
-          if (modelName.includes("vision")) {
+            // Create a dummy image part (smallest possible valid base64 PNG)
+            const minimalBase64Image =
+              "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+            // Test if model accepts image as part
+            const imagePart = {
+              inlineData: {
+                data: minimalBase64Image,
+                mimeType: "image/png",
+              },
+            };
+
+            // Send a test request with minimal image
+            await model.generateContent(["Is this a test image?", imagePart]);
+
+            // If we get here without error, model supports image input
+            logger.success(
+              `🎯 ${modelName} SUPPORTS VISION even without 'vision' in the name!`
+            );
+
+            // Consider this a vision model even though it doesn't have 'vision' in name
             if (!availableModels.vision) {
               availableModels.vision = modelName;
-              logger.success(`🎯 Found vision model: ${modelName}`);
-            } else {
-              // If we already have a vision model but find a better one (newer version)
-              if (isBetterModel(modelName, availableModels.vision)) {
-                logger.info(
-                  `Found potentially better vision model: ${modelName} (replacing ${availableModels.vision})`
-                );
-                availableModels.vision = modelName;
-              }
+              logger.success(`Set ${modelName} as primary vision model`);
             }
-          } else {
-            if (!availableModels.text) {
-              availableModels.text = modelName;
-              logger.success(`📝 Found text model: ${modelName}`);
-            } else {
-              // If we already have a text model but find a better one
-              if (isBetterModel(modelName, availableModels.text)) {
-                logger.info(
-                  `Found potentially better text model: ${modelName} (replacing ${availableModels.text})`
-                );
-                availableModels.text = modelName;
-              }
-            }
+          } catch (visionTestError) {
+            // This model doesn't support vision input (expected for many models)
+            logger.debug(
+              `${modelName} does not support vision input: ${visionTestError.message}`
+            );
           }
-        } catch (error) {
-          logger.debug(`Model '${modelName}' is not available:`, error.message);
+        } else {
+          // Model has 'vision' in the name, so it should support image input
+          if (!availableModels.vision) {
+            availableModels.vision = modelName;
+            logger.success(`Set ${modelName} as primary vision model`);
+          }
         }
-      }
-    } else {
-      // Process models returned by the API and prioritize vision models
-      logger.info("Processing models returned by API...");
 
-      // First pass: look specifically for vision models
-      let visionModels = availableModels.allModels.filter((m) =>
-        m.includes("vision")
-      );
-      if (visionModels.length > 0) {
-        logger.success(
-          `Found ${visionModels.length} vision models: ${visionModels.join(
-            ", "
-          )}`
-        );
+        // Categorize the model as text model if we don't have one yet
+        if (!availableModels.text) {
+          availableModels.text = modelName;
+          logger.success(`Set ${modelName} as primary text model`);
+        }
 
-        // Sort vision models by preference (newer versions first)
-        visionModels.sort((a, b) => {
-          return getModelScore(b) - getModelScore(a);
-        });
+        // Always prefer newer generation models when available
+        if (availableModels.vision && modelName.includes("vision")) {
+          if (isBetterModel(modelName, availableModels.vision)) {
+            logger.info(
+              `Upgrading vision model from ${availableModels.vision} to ${modelName}`
+            );
+            availableModels.vision = modelName;
+          }
+        }
 
-        // Select the best vision model
-        availableModels.vision = visionModels[0];
-        logger.success(
-          `🔍 Selected best vision model: ${availableModels.vision}`
-        );
-      } else {
-        logger.warn('No models with "vision" in the name were found');
-      }
-
-      // Process text models
-      let textModels = availableModels.allModels.filter(
-        (m) => !m.includes("vision")
-      );
-      if (textModels.length > 0) {
-        logger.info(
-          `Found ${textModels.length} text models: ${textModels.join(", ")}`
-        );
-
-        // Sort text models by preference
-        textModels.sort((a, b) => {
-          return getModelScore(b) - getModelScore(a);
-        });
-
-        // Select the best text model
-        availableModels.text = textModels[0];
-        logger.info(`Selected best text model: ${availableModels.text}`);
+        if (isBetterModel(modelName, availableModels.text)) {
+          logger.info(
+            `Upgrading text model from ${availableModels.text} to ${modelName}`
+          );
+          availableModels.text = modelName;
+        }
+      } catch (error) {
+        logger.debug(`Model '${modelName}' is not available: ${error.message}`);
       }
     }
 
-    // Show final models selected with clear formatting
-    logger.success("\n==== SELECTED MODELS ====");
-    logger.info(`Text model: ${availableModels.text || "None available"}`);
-    logger.info(`Vision model: ${availableModels.vision || "None available"}`);
-    logger.info("========================\n");
+    // Show final results
+    logModelSelectionResults();
 
-    // Log all detected models for reference
-    logger.info("All available models:");
-    availableModels.allModels.forEach((model, index) => {
-      logger.info(`${index + 1}. ${model}`);
-    });
-
-    if (!availableModels.text && !availableModels.vision) {
-      logger.error(
-        "No working models found! API key may be invalid or service might be unavailable."
-      );
-      return false;
-    }
-
-    // Special emphasis if vision model was found
-    if (availableModels.vision) {
-      logger.success("✅ Vision model is available and ready to use!");
-    } else {
-      logger.warn(
-        "⚠️ No vision model was found - image analysis will not be available"
-      );
-    }
-
-    return true;
+    return availableModels.allModels.length > 0;
   } catch (error) {
-    logger.error("Error discovering models:", error);
+    logger.error("Error during model discovery:", error);
     return false;
+  }
+}
+
+// Helper function to identify vision models from a list and categorize them
+function identifyAndCategorizeModels(modelsList) {
+  // First look for explicit vision models
+  const explicitVisionModels = modelsList.filter((m) => m.includes("vision"));
+
+  if (explicitVisionModels.length > 0) {
+    logger.success(
+      `Found ${
+        explicitVisionModels.length
+      } explicit vision models: ${explicitVisionModels.join(", ")}`
+    );
+
+    // Sort by score (prefer newer models)
+    explicitVisionModels.sort((a, b) => getModelScore(b) - getModelScore(a));
+    availableModels.vision = explicitVisionModels[0];
+    logger.success(
+      `Selected ${availableModels.vision} as primary vision model`
+    );
+  } else {
+    logger.warn("No explicit vision models found in the API response");
+
+    // Document mentions that some models like gemini-1.5-pro can handle multimodal even without "vision" in name
+    // We'll need to test these separately
+    const potentialMultimodalModels = modelsList.filter(
+      (m) =>
+        m.includes("1.5-pro") ||
+        m.includes("1.5-flash") ||
+        m.includes("2.0-flash") ||
+        m.includes("2.0-pro")
+    );
+
+    if (potentialMultimodalModels.length > 0) {
+      logger.info(
+        `Found ${
+          potentialMultimodalModels.length
+        } potential multimodal models to test: ${potentialMultimodalModels.join(
+          ", "
+        )}`
+      );
+    }
+  }
+
+  // Find the best text model
+  const allModels = [...modelsList]; // Create a copy
+  allModels.sort((a, b) => getModelScore(b) - getModelScore(a));
+
+  if (allModels.length > 0) {
+    availableModels.text = allModels[0];
+    logger.success(`Selected ${availableModels.text} as primary text model`);
+  }
+}
+
+// Helper function to log the results of model selection
+function logModelSelectionResults() {
+  logger.success("\n==== SELECTED MODELS ====");
+  logger.info(`Text model: ${availableModels.text || "None available"}`);
+  logger.info(`Vision model: ${availableModels.vision || "None available"}`);
+  logger.info("========================\n");
+
+  // Log all detected models for reference
+  logger.info("All available models:");
+  availableModels.allModels.forEach((model, index) => {
+    logger.info(`${index + 1}. ${model}`);
+  });
+
+  if (availableModels.vision) {
+    logger.success("✅ Vision capabilities are AVAILABLE");
+  } else {
+    logger.error("❌ No vision model found - image analysis will NOT work");
+    logger.warn(
+      "Consider checking the API key permissions or enabling vision models in your Google AI account"
+    );
   }
 }
 
@@ -347,22 +416,22 @@ function isBetterModel(newModel, currentModel) {
   return getModelScore(newModel) > getModelScore(currentModel);
 }
 
-// Helper function to score models by presumed capability/generation
+// Enhanced scoring function based on model documentation
 function getModelScore(modelName) {
   let score = 0;
 
-  // Prioritize by generation
-  if (modelName.includes("2.0")) score += 100;
-  else if (modelName.includes("1.5")) score += 50;
-  else if (modelName.includes("1.0")) score += 10;
+  // Generation scores
+  if (modelName.includes("2.0")) score += 200;
+  else if (modelName.includes("1.5")) score += 100;
+  else if (modelName.includes("1.0")) score += 50;
+  else score += 10; // Unknown/legacy model
 
-  // Prioritize by capability tier
-  if (modelName.includes("ultra")) score += 30;
-  else if (modelName.includes("pro")) score += 20;
-  else if (modelName.includes("flash")) score += 15;
+  // Capability tier scores
+  if (modelName.includes("pro")) score += 30;
+  else if (modelName.includes("flash")) score += 20;
 
-  // Adjust for vision capability
-  if (modelName.includes("vision")) score += 25;
+  // Vision capability (highest priority)
+  if (modelName.includes("vision")) score += 100;
 
   return score;
 }
@@ -403,291 +472,359 @@ async function testApiKey() {
 }
 
 // Test endpoint
-app.get("/api/test", (req, res) => {
-  logger.info("API test endpoint called");
-  res.json({
-    status: "Server is running",
-    timestamp: new Date().toISOString(),
-    apiKeySet: API_KEY !== "your-api-key-here" && API_KEY.length > 10,
-    availableModels: {
-      text: availableModels.text || "None detected",
-      vision: availableModels.vision || "None detected",
-      allModels: availableModels.allModels,
-    },
-  });
+app.get('/api/test', (req, res) => {
+    logger.info('API test endpoint called');
+    res.json({
+        status: 'Server is running',
+        timestamp: new Date().toISOString(),
+        apiKeySet: API_KEY !== 'your-api-key-here' && API_KEY.length > 10,
+        availableModels: {
+            text: availableModels.text || 'None detected',
+            vision: availableModels.vision || 'None detected',
+            allModels: availableModels.allModels
+        }
+    });
 });
 
 // Chat endpoint for text-based queries
-app.post("/api/chat", async (req, res) => {
-  try {
-    const { model: requestedModel, messages } = req.body;
+app.post('/api/chat', async (req, res) => {
+    try {
+        const { model: requestedModel, messages } = req.body;
+        
+        if (!messages || !Array.isArray(messages)) {
+            logger.warn('Invalid request: missing or invalid messages array');
+            return res.status(400).json({ error: 'Invalid messages format' });
+        }
 
-    if (!messages || !Array.isArray(messages)) {
-      logger.warn("Invalid request: missing or invalid messages array");
-      return res.status(400).json({ error: "Invalid messages format" });
-    }
-
-    logger.info(`Chat request received: ${messages.length} messages`);
-
-    // Check if we have a working text model
-    if (!availableModels.text) {
-      logger.error("No working text model available");
-      return res.status(503).json({
-        error: "No working text model available",
-        details: "The server could not find any working Gemini text models",
-      });
-    }
-
-    // Use requested model, fallback to best available text model
-    const modelName = requestedModel || availableModels.text;
-    logger.info(`Using model: ${modelName}`);
-
-    const genModel = genAI.getGenerativeModel({ model: modelName });
-
-    // Format conversation history for Gemini
-    const history = [];
-    let prompt = "";
-
-    // Get the last user message as the prompt
-    for (let i = 0; i < messages.length; i++) {
-      const msg = messages[i];
-      if (i < messages.length - 1) {
-        history.push({
-          role: msg.role === "assistant" ? "model" : "user",
-          parts: [{ text: msg.content }],
+        logger.info(`Chat request received: ${messages.length} messages`);
+        
+        // Check if we have a working text model
+        if (!availableModels.text) {
+            logger.error('No working text model available');
+            return res.status(503).json({ 
+                error: 'No working text model available',
+                details: 'The server could not find any working Gemini text models'
+            });
+        }
+        
+        // Use requested model, fallback to best available text model
+        const modelName = requestedModel || availableModels.text;
+        logger.info(`Using model: ${modelName}`);
+        
+        const genModel = genAI.getGenerativeModel({ model: modelName });
+        
+        // Format conversation history for Gemini
+        const history = [];
+        let prompt = "";
+        
+        // Get the last user message as the prompt
+        for (let i = 0; i < messages.length; i++) {
+            const msg = messages[i];
+            if (i < messages.length - 1) {
+                history.push({
+                    role: msg.role === 'assistant' ? 'model' : 'user',
+                    parts: [{ text: msg.content }]
+                });
+            } else if (msg.role === 'user') {
+                prompt = msg.content;
+                
+                // Log user message
+                logger.userMessage(prompt);
+            }
+        }
+        
+        logger.info(`Chat prompt: ${prompt.length} characters`);
+        logger.info(`Conversation history: ${history.length} previous messages`);
+        
+        // Generate response
+        logger.debug('Calling Gemini API...');
+        const chat = history.length > 0 ? 
+            genModel.startChat({ history }) : 
+            genModel.startChat();
+        
+        const result = await chat.sendMessage(prompt);
+        const response = await result.response;
+        const text = response.text();
+        
+        // Log AI Response
+        logger.aiResponse(text);
+        
+        logger.success(`Chat response generated: ${text.length} characters`);
+        
+        res.json({
+            content: [{ type: 'text', text }],
+            model: modelName
         });
-      } else if (msg.role === "user") {
-        prompt = msg.content;
-
-        // Log user message
-        logger.userMessage(prompt);
-      }
+    } catch (error) {
+        logger.error('Error in chat endpoint:', error);
+        
+        // More detailed error handling
+        let errorDetails = error.message;
+        let statusCode = 500;
+        
+        if (error.message.includes('API key not valid')) {
+            errorDetails = 'Invalid API key. Please check your Gemini API key configuration.';
+            statusCode = 401;
+        } else if (error.message.includes('not found')) {
+            errorDetails = 'The requested model was not found. Please check your model name.';
+            statusCode = 404;
+        } else if (error.message.includes('quota')) {
+            errorDetails = 'API quota exceeded. Please try again later or check your usage limits.';
+            statusCode = 429;
+        }
+        
+        res.status(statusCode).json({ 
+            error: 'An error occurred while processing your request',
+            details: errorDetails
+        });
     }
-
-    logger.info(`Chat prompt: ${prompt.length} characters`);
-    logger.info(`Conversation history: ${history.length} previous messages`);
-
-    // Generate response
-    logger.debug("Calling Gemini API...");
-    const chat =
-      history.length > 0
-        ? genModel.startChat({ history })
-        : genModel.startChat();
-
-    const result = await chat.sendMessage(prompt);
-    const response = await result.response;
-    const text = response.text();
-
-    // Log AI Response
-    logger.aiResponse(text);
-
-    logger.success(`Chat response generated: ${text.length} characters`);
-
-    res.json({
-      content: [{ type: "text", text }],
-      model: modelName,
-    });
-  } catch (error) {
-    logger.error("Error in chat endpoint:", error);
-
-    // More detailed error handling
-    let errorDetails = error.message;
-    let statusCode = 500;
-
-    if (error.message.includes("API key not valid")) {
-      errorDetails =
-        "Invalid API key. Please check your Gemini API key configuration.";
-      statusCode = 401;
-    } else if (error.message.includes("not found")) {
-      errorDetails =
-        "The requested model was not found. Please check your model name.";
-      statusCode = 404;
-    } else if (error.message.includes("quota")) {
-      errorDetails =
-        "API quota exceeded. Please try again later or check your usage limits.";
-      statusCode = 429;
-    }
-
-    res.status(statusCode).json({
-      error: "An error occurred while processing your request",
-      details: errorDetails,
-    });
-  }
 });
 
-// Image analysis endpoint
-app.post("/api/analyze-image", uploadMiddleware, async (req, res) => {
-  try {
-    // Enhanced logging for image analysis
-    logger.info("==== IMAGE ANALYSIS REQUEST ====");
-
-    if (!req.file) {
-      logger.error("No image file in request");
-      return res.status(400).json({ error: "No image uploaded" });
-    }
-
-    logger.info(
-      `Image file: ${req.file.originalname} (${req.file.size} bytes, ${req.file.mimetype})`
-    );
-
-    // Check if we have a working vision model
-    if (!availableModels.vision) {
-      logger.error("No working vision model available");
-      return res.status(503).json({
-        error: "No working vision model available",
-        details: "The server could not find any working Gemini vision models",
-      });
-    }
-
-    const imageData = req.file.buffer;
-    const prompt = req.body.prompt || "What's in this image?";
-
-    // Log user message for image prompt
-    logger.userMessage(`[IMAGE] ${prompt}`);
-
-    logger.info(`Image analysis prompt: "${prompt}"`);
-    logger.info(`Image size: ${imageData.length} bytes`);
-    logger.info(`Using vision model: ${availableModels.vision}`);
-
-    // Using the multimodal model for image analysis
-    const model = genAI.getGenerativeModel({ model: availableModels.vision });
-
-    // Convert buffer to base64
-    logger.debug("Converting image to base64...");
-    const imageBase64 = imageData.toString("base64");
-    logger.debug(`Base64 image length: ${imageBase64.length} characters`);
-
-    const imagePart = {
-      inlineData: {
-        data: imageBase64,
-        mimeType: req.file.mimetype,
-      },
-    };
-
-    // Log extra details about the request
-    logger.debug(`Request details: 
+// Enhanced image analysis endpoint with better error handling and diagnostics
+app.post('/api/analyze-image', uploadMiddleware, async (req, res) => {
+    try {
+        // Enhanced logging for image analysis
+        logger.info('==== IMAGE ANALYSIS REQUEST ====');
+        
+        if (!req.file) {
+            logger.error('No image file in request');
+            return res.status(400).json({ error: 'No image uploaded' });
+        }
+        
+        // Log detailed file information
+        logger.info(`Image file: ${req.file.originalname} (${req.file.size} bytes, ${req.file.mimetype})`);
+        
+        // Check file size
+        if (req.file.size > 20 * 1024 * 1024) {
+            logger.warn('Image size exceeds 20MB - this may require using the File API instead of inline data');
+        }
+        
+        // Verify file format is supported according to documentation
+        const supportedFormats = ['image/png', 'image/jpeg', 'image/webp', 'image/heic', 'image/heif'];
+        if (!supportedFormats.includes(req.file.mimetype)) {
+            logger.warn(`Image format ${req.file.mimetype} is not in the officially supported list: ${supportedFormats.join(', ')}`);
+            logger.warn('Proceeding anyway, but this might cause issues');
+        }
+        
+        // Check if we have a working vision model
+        if (!availableModels.vision) {
+            logger.error('No working vision model available');
+            
+            // Detailed error message with troubleshooting steps
+            return res.status(503).json({ 
+                error: 'No working vision model available',
+                details: 'The server could not find any working Gemini vision models. This could be due to:',
+                troubleshooting: [
+                    'Your API key might not have access to vision models',
+                    'Vision models might not be available in your region',
+                    'You might need to enable vision models in your Google AI Studio account',
+                    'There might be a temporary outage of vision services'
+                ]
+            });
+        }
+        
+        const imageData = req.file.buffer;
+        const prompt = req.body.prompt || "What's in this image?";
+        
+        // Log user message for image prompt
+        logger.userMessage(`[IMAGE] ${prompt}`);
+        
+        logger.info(`Image analysis prompt: "${prompt}"`);
+        logger.info(`Image size: ${imageData.length} bytes`);
+        logger.info(`Using vision model: ${availableModels.vision}`);
+        
+        // Initialize the model with safety settings following documentation
+        const model = genAI.getGenerativeModel({ 
+            model: availableModels.vision,
+            safetySettings: [
+                {
+                    category: "HARM_CATEGORY_HARASSMENT",
+                    threshold: "BLOCK_MEDIUM_AND_ABOVE"
+                },
+                {
+                    category: "HARM_CATEGORY_HATE_SPEECH",
+                    threshold: "BLOCK_MEDIUM_AND_ABOVE"
+                },
+                {
+                    category: "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                    threshold: "BLOCK_MEDIUM_AND_ABOVE"
+                },
+                {
+                    category: "HARM_CATEGORY_DANGEROUS_CONTENT",
+                    threshold: "BLOCK_MEDIUM_AND_ABOVE"
+                }
+            ]
+        });
+        
+        // Convert buffer to base64 - ensure proper encoding
+        logger.debug('Converting image to base64...');
+        const imageBase64 = Buffer.from(imageData).toString('base64');
+        logger.debug(`Base64 image length: ${imageBase64.length} characters`);
+        
+        // Create image part following documentation format
+        const imagePart = {
+            inlineData: {
+                data: imageBase64,
+                mimeType: req.file.mimetype
+            }
+        };
+        
+        // Alternative approach to debug: Try a minimal known-working image
+        const debugWithMinimalImage = false;
+        
+        if (debugWithMinimalImage) {
+            logger.info('DEBUG MODE: Using minimal test image instead of uploaded image');
+            // Smallest valid transparent PNG
+            const minimalBase64Image = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+            imagePart.inlineData.data = minimalBase64Image;
+            imagePart.inlineData.mimeType = "image/png";
+        }
+        
+        // Log additional diagnostic info
+        logger.debug(`Request details: 
         - Image MIME type: ${req.file.mimetype}
         - Image original name: ${req.file.originalname}
         - Image buffer length: ${imageData.length}
+        - Base64 encoded length: ${imagePart.inlineData.data.length}
         - Model being used: ${availableModels.vision}
         - Prompt length: ${prompt.length}`);
-
-    logger.info("Sending image to Gemini API...");
-
-    // Make the API call with more detailed error handling
-    let result, response, text;
-    try {
-      result = await model.generateContent([prompt, imagePart]);
-      response = await result.response;
-      text = response.text();
-
-      // Log AI Response for image
-      logger.aiResponse(`[IMAGE ANALYSIS] ${text}`);
-
-      logger.success(
-        `Image analysis successful! Response: ${text.length} characters`
-      );
-    } catch (apiError) {
-      logger.error("API call failed during image analysis");
-      logger.error("API error details:", apiError);
-
-      // Check for common image-specific issues
-      if (apiError.message.includes("exceeds the maximum size")) {
-        throw new Error(
-          "Image size too large for the API. Please use a smaller image."
-        );
-      } else if (apiError.message.includes("not supported")) {
-        throw new Error(
-          `Image format not supported. Supported formats include JPEG, PNG, WEBP, and GIF. Current format: ${req.file.mimetype}`
-        );
-      } else if (apiError.message.includes("image")) {
-        throw new Error(`Image processing error: ${apiError.message}`);
-      } else {
-        // Re-throw the original error
-        throw apiError;
-      }
+        
+        logger.info('Sending image to Gemini API...');
+        
+        // Make the API call with more detailed error handling
+        let result, response, text;
+        
+        try {
+            // Per documentation, send both prompt and image part together
+            // The prompt should come first for best results when using a single image
+            result = await model.generateContent([prompt, imagePart]);
+            response = await result.response;
+            text = response.text();
+            
+            // Check if we got an empty response
+            if (!text || text.trim() === '') {
+                logger.warn('Received empty response from API, retrying with different approach...');
+                
+                // Try again with image first, then prompt (alternative approach)
+                result = await model.generateContent([imagePart, prompt]);
+                response = await result.response;
+                text = response.text();
+                
+                if (!text || text.trim() === '') {
+                    throw new Error('Received empty response from API even after retry');
+                }
+            }
+            
+            // Log AI Response for image
+            logger.aiResponse(`[IMAGE ANALYSIS] ${text}`);
+            
+            logger.success(`Image analysis successful! Response: ${text.length} characters`);
+        } catch (apiError) {
+            logger.error('API call failed during image analysis');
+            logger.error('API error details:', apiError);
+            
+            // Enhanced error categorization based on documentation
+            if (apiError.message.includes('exceeds the maximum size')) {
+                throw new Error('Image size too large. Per documentation, inline images should be under 20MB. For larger images, use the File API.');
+            } else if (apiError.message.includes('not supported') || apiError.message.includes('invalid format')) {
+                throw new Error(`Image format not supported. Supported formats include PNG, JPEG, WEBP, HEIC, and HEIF. Current format: ${req.file.mimetype}`);
+            } else if (apiError.message.includes('blocked') || apiError.message.includes('safety')) {
+                throw new Error('Content blocked by safety filters. The image may contain inappropriate content.');
+            } else if (apiError.message.includes('not found') || apiError.message.includes('does not exist')) {
+                throw new Error(`Model "${availableModels.vision}" not found or does not support vision. Try using a different model.`);
+            } else if (apiError.message.includes('quota') || apiError.message.includes('rate limit')) {
+                throw new Error('API quota or rate limit exceeded. Please try again later.');
+            } else if (apiError.message.includes('permission')) {
+                throw new Error('Permission denied. Your API key may not have access to vision models.');
+            } else if (apiError.message.includes('invalid image')) {
+                // Detailed logging for image encoding issues
+                logger.error('Invalid image error - this might be a problem with image encoding');
+                logger.error('Image Details:', {
+                    size: req.file.size,
+                    mimeType: req.file.mimetype, 
+                    originalName: req.file.originalname,
+                    bufferLength: req.file.buffer.length,
+                    base64Length: imageBase64.length
+                });
+                throw new Error(`Invalid image: ${apiError.message}. Please try a different image format or encoding.`);
+            } else {
+                // Re-throw with additional diagnostic info
+                throw new Error(`API error: ${apiError.message}`);
+            }
+        }
+        
+        res.json({
+            content: [{ type: 'text', text }],
+            model: availableModels.vision
+        });
+    } catch (error) {
+        logger.error('Error in image analysis endpoint:', error);
+        
+        // Send detailed error response
+        res.status(500).json({ 
+            error: 'Image analysis failed',
+            details: error.message,
+            troubleshooting: [
+                'Check that your API key has access to vision models',
+                'Verify the image format is supported (PNG, JPEG, WEBP, HEIC, HEIF)',
+                'Try a smaller or different image',
+                'Make sure the image content complies with content safety policies'
+            ]
+        });
     }
-
-    res.json({
-      content: [{ type: "text", text }],
-      model: availableModels.vision,
-    });
-  } catch (error) {
-    logger.error("Error in image analysis endpoint:", error);
-
-    // More detailed error handling
-    let errorDetails = error.message;
-    let statusCode = 500;
-
-    if (error.message.includes("API key not valid")) {
-      errorDetails =
-        "Invalid API key. Please check your Gemini API key configuration.";
-      statusCode = 401;
-    } else if (error.message.includes("image")) {
-      errorDetails = `Image processing error: ${error.message}`;
-      statusCode = 400;
-    } else if (error.message.includes("not found")) {
-      errorDetails = "The vision model was not found or is not available.";
-      statusCode = 404;
-    } else if (error.message.includes("quota")) {
-      errorDetails =
-        "API quota exceeded. Please try again later or check your usage limits.";
-      statusCode = 429;
-    }
-
-    res.status(statusCode).json({
-      error: "An error occurred while processing your image",
-      details: errorDetails,
-    });
-  }
 });
 
 // Detailed diagnostic endpoint
-app.get("/api/diagnostics", (req, res) => {
-  logger.info("Diagnostics endpoint called");
-
-  // Gather system information
-  const diagnostics = {
-    server: {
-      node_version: process.version,
-      platform: process.platform,
-      arch: process.arch,
-      uptime: process.uptime(),
-      memory: process.memoryUsage(),
-      env: {
-        NODE_ENV: process.env.NODE_ENV || "not set",
-        PORT: PORT,
-      },
-    },
-    api: {
-      key_configured: API_KEY !== "your-api-key-here",
-      key_length: API_KEY.length,
-      models: availableModels,
-    },
-  };
-
-  res.json(diagnostics);
+app.get('/api/diagnostics', (req, res) => {
+    logger.info('Diagnostics endpoint called');
+    
+    // Gather system information
+    const diagnostics = {
+        server: {
+            node_version: process.version,
+            platform: process.platform,
+            arch: process.arch,
+            uptime: process.uptime(),
+            memory: process.memoryUsage(),
+            env: {
+                NODE_ENV: process.env.NODE_ENV || 'not set',
+                PORT: PORT
+            }
+        },
+        api: {
+            key_configured: API_KEY !== 'your-api-key-here',
+            key_length: API_KEY.length,
+            models: availableModels
+        }
+    };
+    
+    res.json(diagnostics);
 });
 
 // Fallback route for SPA
-app.get("*", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "index.html"));
+app.get('*', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 // Start the server
 app.listen(PORT, async () => {
-  logger.info(`Server running on port ${PORT}`);
-  logger.info(`Visit http://localhost:${PORT} to view the application`);
-
-  // Test the API key during startup
-  const isValid = await testApiKey();
-  if (!isValid) {
-    logger.warn(
-      "\n⚠️ Server started with invalid API key or no working models found!"
-    );
-    logger.warn("⚠️ Chat functionality will not work until this is resolved.");
-    logger.warn("⚠️ Please check your API key and restart the server.\n");
-  } else {
-    logger.success("\n✅ Server started successfully with working models!");
-  }
+    logger.info(`Server running on port ${PORT}`);
+    logger.info(`Visit http://localhost:${PORT} to view the application`);
+    
+    // Test the API key during startup
+    const isValid = await testApiKey();
+    if (!isValid) {
+        logger.warn('\n⚠️ Server started with invalid API key or no working models found!');
+        logger.warn('⚠️ Chat functionality will not work until this is resolved.');
+        logger.warn('⚠️ Please check your API key and restart the server.\n');
+    } else {
+        logger.success('\n✅ Server started successfully with working models!');
+        
+        if (availableModels.vision) {
+            logger.success('✅ Vision capability is AVAILABLE - image analysis should work');
+        } else {
+            logger.warn('⚠️ No vision models found - image analysis will NOT work');
+            logger.info('   Visit http://localhost:${PORT}/api/diagnostics for troubleshooting');
+        }
+    }
 });
